@@ -99,6 +99,11 @@ public final class JavaClass implements JavaNode {
 		return false;
 	}
 
+	@Override
+	public ICodeNodeRef getCodeNodeRef() {
+		return cls;
+	}
+
 	/**
 	 * Internal API. Not Stable!
 	 */
@@ -247,6 +252,10 @@ public final class JavaClass implements JavaNode {
 		return cls.getPackage();
 	}
 
+	public JavaPackage getJavaPackage() {
+		return cls.getPackageNode().getJavaNode();
+	}
+
 	@Override
 	public JavaClass getDeclaringClass() {
 		return parent;
@@ -329,7 +338,7 @@ public final class JavaClass implements JavaNode {
 
 	@Override
 	public void removeAlias() {
-		this.cls.getClassInfo().removeAlias();
+		cls.removeAlias();
 	}
 
 	@Override
