@@ -39,10 +39,14 @@ public class ActionMessageBox {
 	private final List<Action> actions;
 
 	public ActionMessageBox(Window parent, String title, String msg, Action... actions) {
+		this(parent, title, msg, Arrays.asList(actions));
+	}
+
+	public ActionMessageBox(Window parent, String title, String msg, List<Action> actions) {
 		this.parent = parent;
 		this.title = title;
 		this.msg = msg;
-		this.actions = Arrays.asList(actions);
+		this.actions = actions;
 	}
 
 	/**
