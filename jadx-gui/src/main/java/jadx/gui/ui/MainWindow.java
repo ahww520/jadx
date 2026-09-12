@@ -32,13 +32,16 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import javax.swing.AbstractAction;
 import javax.swing.Action;
+import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.JCheckBox;
 import javax.swing.JCheckBoxMenuItem;
+import javax.swing.JComponent;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JMenu;
@@ -48,9 +51,11 @@ import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
+import javax.swing.JTextField;
 import javax.swing.JToggleButton;
 import javax.swing.JToolBar;
 import javax.swing.JTree;
+import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.ToolTipManager;
 import javax.swing.UIManager;
@@ -59,7 +64,6 @@ import javax.swing.event.TreeExpansionEvent;
 import javax.swing.event.TreeWillExpandListener;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeCellRenderer;
-import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreeNode;
 import javax.swing.tree.TreePath;
 import javax.swing.tree.TreeSelectionModel;
@@ -70,12 +74,16 @@ import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.formdev.flatlaf.FlatClientProperties;
 import com.formdev.flatlaf.FlatLaf;
 import com.formdev.flatlaf.extras.FlatInspector;
 import com.formdev.flatlaf.extras.FlatUIDefaultsInspector;
 import com.formdev.flatlaf.util.UIScale;
 
 import ch.qos.logback.classic.Level;
+import hu.akarnokd.rxjava3.swing.SwingSchedulers;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 
 import jadx.api.JadxArgs;
 import jadx.api.JavaClass;
@@ -172,9 +180,11 @@ import jadx.gui.utils.Icons;
 import jadx.gui.utils.LafManager;
 import jadx.gui.utils.Link;
 import jadx.gui.utils.NLS;
+import jadx.gui.utils.TextStandardActions;
 import jadx.gui.utils.UiUtils;
 import jadx.gui.utils.dbg.UIWatchDog;
 import jadx.gui.utils.fileswatcher.LiveReloadWorker;
+import jadx.gui.utils.rx.RxUtils;
 import jadx.gui.utils.shortcut.ShortcutsController;
 import jadx.gui.utils.ui.ActionHandler;
 import jadx.gui.utils.ui.FileOpenerHelper;
@@ -214,7 +224,7 @@ public class MainWindow extends JFrame {
 	private transient JSplitPane quickTabsAndCodeSplitPane;
 
 	private JTree tree;
-	private DefaultTreeModel treeModel;
+	private FilterableTreeModel treeModel;
 	private JRoot treeRoot;
 	private TabbedPane tabbedPane;
 	private HeapUsageBar heapUsageBar;
@@ -250,6 +260,10 @@ public class MainWindow extends JFrame {
 	public JMenu hexViewerMenu;
 
 	private final transient RenameMappingsGui renameMappings;
+
+	private JTextField treeFilterField;
+	private Disposable treeFilterDisposable;
+	private Disposable treeScrollDisposable;
 
 	public MainWindow(JadxSettings settings) {
 		this.settings = settings;
@@ -817,6 +831,7 @@ public class MainWindow extends JFrame {
 		treeRoot = new JRoot(this);
 		treeRoot.setFlatPackages(isFlattenPackage);
 		treeModel.setRoot(treeRoot);
+		treeFilterField.setText("");
 		addTreeCustomNodes();
 		treeRoot.update();
 		reloadTree();
@@ -1374,9 +1389,12 @@ public class MainWindow extends JFrame {
 		mainPanel.add(treeSplitPane);
 
 		DefaultMutableTreeNode treeRootNode = new DefaultMutableTreeNode(NLS.str("msg.open_file"));
-		treeModel = new DefaultTreeModel(treeRootNode);
+
+		treeModel = new FilterableTreeModel(this, treeRootNode);
 		tree = new JTree(treeModel);
+		tree.setLargeModel(true);
 		ToolTipManager.sharedInstance().registerComponent(tree);
+
 		tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
 		tree.setFocusable(false);
 		tree.addFocusListener(new FocusAdapter() {
@@ -1458,16 +1476,38 @@ public class MainWindow extends JFrame {
 		progressPane = new ProgressPanel(this, true);
 		issuesPanel = new IssuesPanel(this);
 
+		treeFilterField = new JTextField();
+		TextStandardActions.attach(treeFilterField);
+		treeFilterField.setToolTipText(NLS.str("tree.filter"));
+		treeFilterField.putClientProperty(FlatClientProperties.TEXT_FIELD_SHOW_CLEAR_BUTTON, true);
+		treeFilterField.putClientProperty(FlatClientProperties.PLACEHOLDER_TEXT, NLS.str("tree.filter"));
+		treeFilterField.registerKeyboardAction(ev -> treeFilterField.setText(""),
+				KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_FOCUSED);
+
+		treeFilterDisposable = RxUtils.textFieldChanges(treeFilterField)
+				.debounce(300, TimeUnit.MILLISECONDS)
+				.observeOn(Schedulers.newThread())
+				.subscribe(t -> treeModel.setFilter(treeFilterField.getText()));
+
+		JPanel filterPanel = new JPanel(new BorderLayout());
+		filterPanel.setBorder(BorderFactory.createEmptyBorder(5, 2, 2, 2));
+		filterPanel.add(treeFilterField, BorderLayout.CENTER);
+
 		JPanel leftPane = new JPanel(new BorderLayout());
 		JScrollPane treeScrollPane = new JScrollPane(tree);
 		treeScrollPane.setMinimumSize(new Dimension(100, 150));
+		treeScrollDisposable = RxUtils.scrollBarEvents(treeScrollPane.getVerticalScrollBar())
+				.observeOn(SwingSchedulers.edt())
+				.subscribe(v -> treeModel.expandVisibleFilteredNodes(tree));
 
 		JPanel bottomPane = new JPanel(new BorderLayout());
 		bottomPane.add(issuesPanel, BorderLayout.PAGE_START);
 		bottomPane.add(progressPane, BorderLayout.PAGE_END);
 
+		leftPane.add(filterPanel, BorderLayout.PAGE_START);
 		leftPane.add(treeScrollPane, BorderLayout.CENTER);
 		leftPane.add(bottomPane, BorderLayout.PAGE_END);
+
 		treeSplitPane.setLeftComponent(leftPane);
 
 		tabbedPane = new TabbedPane(this, tabsController);
@@ -1607,9 +1647,14 @@ public class MainWindow extends JFrame {
 
 				closeAll();
 				UiUtils.uiRunAndWait(() -> {
-					heapUsageBar.reset();
-					editorThemeManager.unload();
-					dispose();
+					try {
+						heapUsageBar.reset();
+						editorThemeManager.unload();
+						treeFilterDisposable.dispose();
+						treeScrollDisposable.dispose();
+					} finally {
+						dispose();
+					}
 				});
 			} catch (Exception e) {
 				LOG.error("Close window error", e);
@@ -1704,8 +1749,16 @@ public class MainWindow extends JFrame {
 		return backgroundExecutor;
 	}
 
+	public JTree getTree() {
+		return tree;
+	}
+
 	public JRoot getTreeRoot() {
 		return treeRoot;
+	}
+
+	public JTextField getTreeFilterField() {
+		return treeFilterField;
 	}
 
 	public JDebuggerPanel getDebuggerPanel() {
